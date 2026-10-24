@@ -1,0 +1,9 @@
+# Never bake credentials or local runtime state into the image
+.streamlit/secrets.toml
+.env
+.env.*
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
