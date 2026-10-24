@@ -1,0 +1,1 @@
+Explain how TCP congestion control works. Describe slow start, congestion avoidance, fast retransmit and fast recovery. (10 marks)

@@ -1,0 +1,11 @@
+[
+  {"name": "Technical Accuracy", "max_marks": 4,
+   "description": "Correct behaviour of cwnd: exponential growth in slow start, linear (additive) growth in congestion avoidance, ssthresh halving, different reaction to timeout (reset to 1 MSS) vs three duplicate ACKs (fast retransmit/recovery). No conceptual errors.",
+   "keywords": ["exponential|doubl", "linear|additive", "ssthresh|threshold", "half|halv|multiplicative", "timeout|RTO", "duplicate"]},
+  {"name": "Completeness", "max_marks": 3,
+   "description": "Covers all four mechanisms (slow start, congestion avoidance, fast retransmit, fast recovery) and the role of cwnd together with the receiver window.",
+   "keywords": ["slow start", "congestion avoidance", "fast retransmit", "fast recovery", "congestion window|cwnd", "receiver|rwnd|advertised"]},
+  {"name": "Nomenclature", "max_marks": 3,
+   "description": "Uses correct standard terms: cwnd, ssthresh, MSS, RTT, ACK, AIMD, RTO, Reno.",
+   "keywords": ["cwnd|congestion window", "ssthresh|slow start threshold", "MSS|maximum segment size", "RTT|round trip", "ACK|acknowledg", "AIMD", "Reno|Tahoe"]}
+]

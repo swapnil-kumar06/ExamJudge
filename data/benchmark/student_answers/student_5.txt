@@ -1,0 +1,1 @@
+Congestion control means controlling the traffic in the network by routers. Routers drop the packets when the queue is full. TCP is a protocol of internet. It sends data in packets. If there is congestion data is slow.

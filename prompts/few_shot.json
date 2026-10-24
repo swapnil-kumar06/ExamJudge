@@ -1,0 +1,40 @@
+{
+  "note": "Calibration examples on a DIFFERENT question from the benchmark set, so no benchmark answer leaks into the prompt. Same rubric weights (4/3/3).",
+  "question": "Explain the purpose and working of the Address Resolution Protocol (ARP).",
+  "model_answer": "ARP maps a known IPv4 address to the MAC (hardware) address on the same local network. A host that needs a MAC address broadcasts an ARP request (Layer 2 broadcast, FF:FF:FF:FF:FF:FF) asking 'Who has IP x?'. The owner of that IP replies with a unicast ARP reply carrying its MAC address. The requester stores the mapping in its ARP cache with a timeout to avoid repeating requests. For destinations outside the subnet the host ARPs for the default gateway instead. Gratuitous ARP is used to announce or detect duplicate addresses; ARP is unauthenticated, which makes ARP spoofing possible.",
+  "rubric": [
+    {"name": "Technical Accuracy", "max_marks": 4, "description": "Request/reply mechanism, broadcast vs unicast and gateway handling are correct."},
+    {"name": "Completeness", "max_marks": 3, "description": "Covers purpose, request, reply, cache, off-subnet case."},
+    {"name": "Nomenclature", "max_marks": 3, "description": "Correct terms: MAC, ARP request/reply, broadcast, ARP cache, gateway."}
+  ],
+  "examples": [
+    {
+      "student_answer": "ARP is used to find the MAC address that belongs to an IP address inside a LAN. The sender broadcasts an ARP request asking who has a given IP. The machine with that IP sends back a unicast ARP reply with its MAC address. The result is saved in the ARP cache for some time so the request need not be repeated. If the target is on another network, the host sends the request for the default gateway's MAC.",
+      "expected_output": {
+        "criteria": [
+          {"name": "Technical Accuracy", "reasoning": "Purpose (IP->MAC on LAN) correct; request is broadcast and reply is unicast, both correct; gateway case correct. No errors found.", "evidence": ["broadcasts an ARP request", "unicast ARP reply"], "deficiencies": [], "score": 4},
+          {"name": "Completeness", "reasoning": "Purpose, request, reply, cache and off-subnet case are all present. Cache timeout is only implied ('for some time'); gratuitous ARP/spoofing not mentioned but not required by the rubric.", "evidence": ["saved in the ARP cache for some time"], "deficiencies": ["Gratuitous ARP / security weakness not mentioned (optional)"], "score": 2.5},
+          {"name": "Nomenclature", "reasoning": "Uses MAC address, ARP request, ARP reply, broadcast, unicast, ARP cache and default gateway correctly. Does not use the Layer-2 broadcast address notation, a minor omission.", "evidence": ["ARP cache", "default gateway"], "deficiencies": [], "score": 2.5}
+        ],
+        "conceptual_deficiencies": [],
+        "strengths": ["Clear request/reply flow", "Handles the off-subnet case"],
+        "feedback": "Strong answer. To reach full marks, mention the cache timeout explicitly and note ARP's lack of authentication (spoofing risk).",
+        "total": 9
+      }
+    },
+    {
+      "student_answer": "ARP is a protocol that converts MAC address into IP address using the internet. It is used by routers to send packets to other countries. When a computer wants to send data it sends the packet to ARP server which tells the address. It is like DNS.",
+      "expected_output": {
+        "criteria": [
+          {"name": "Technical Accuracy", "reasoning": "Direction of mapping is reversed (that describes RARP, not ARP). No ARP server exists; ARP is a broadcast request/reply between hosts on one LAN. 'Like DNS' is a misleading analogy. Nearly everything is incorrect.", "evidence": ["converts MAC address into IP address", "ARP server"], "deficiencies": ["Mapping direction reversed", "Believes a central ARP server exists", "Confuses LAN scope with internet-wide"], "score": 0.5},
+          {"name": "Completeness", "reasoning": "No request/reply description, no cache, no off-subnet/gateway case. Only a vague purpose statement.", "evidence": [], "deficiencies": ["Broadcast request missing", "Reply missing", "ARP cache missing", "Gateway case missing"], "score": 0.5},
+          {"name": "Nomenclature", "reasoning": "Uses the terms ARP, MAC and IP address, but incorrectly. No broadcast, cache or gateway vocabulary.", "evidence": ["MAC address into IP address"], "deficiencies": ["Key terms absent"], "score": 0.5}
+        ],
+        "conceptual_deficiencies": ["ARP maps IP to MAC, not MAC to IP", "ARP works by LAN broadcast, with no server", "ARP is limited to the local network"],
+        "strengths": ["Names the protocol and recognises it deals with addresses"],
+        "feedback": "Revise the basics: ARP resolves an IP address to a MAC address on the same LAN using a broadcast request and a unicast reply. Draw the exchange between two hosts and add the ARP cache and default-gateway case.",
+        "total": 1.5
+      }
+    }
+  ]
+}

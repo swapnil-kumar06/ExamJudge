@@ -1,0 +1,11 @@
+{
+  "note": "ILLUSTRATIVE SAMPLE: these five student answers and the human marks were authored for this repo to demonstrate the pipeline. Replace them with real, independently graded scripts (ideally 2+ human graders) before reporting results.",
+  "max_total": 10,
+  "students": [
+    {"id": "student_1", "file": "student_1.txt", "human": {"Technical Accuracy": 3.5, "Completeness": 3.0, "Nomenclature": 2.5}, "comment": "Excellent; omits only RTO naming detail at the end."},
+    {"id": "student_2", "file": "student_2.txt", "human": {"Technical Accuracy": 3.0, "Completeness": 2.5, "Nomenclature": 2.0}, "comment": "Correct but fast recovery is vague; few precise terms."},
+    {"id": "student_3", "file": "student_3.txt", "human": {"Technical Accuracy": 2.0, "Completeness": 1.0, "Nomenclature": 0.5}, "comment": "On-topic but shallow; no mechanisms or terms."},
+    {"id": "student_4", "file": "student_4.txt", "human": {"Technical Accuracy": 0.5, "Completeness": 1.5, "Nomenclature": 1.0}, "comment": "Long and keyword-heavy but contains multiple conceptual errors (linear/exponential swapped, receiver-side control)."},
+    {"id": "student_5", "file": "student_5.txt", "human": {"Technical Accuracy": 0.0, "Completeness": 0.5, "Nomenclature": 0.0}, "comment": "Almost no relevant content."}
+  ]
+}
