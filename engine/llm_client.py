@@ -63,7 +63,7 @@ def chat_json(cfg, messages) -> dict:
     client = OpenAI(
         api_key=cfg.api_key,
         base_url=cfg.base_url or None,
-        timeout=45,
+        timeout=120,
         max_retries=0,
     )
 
