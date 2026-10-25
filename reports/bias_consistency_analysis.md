@@ -1,54 +1,21 @@
-# Bias, Consistency and Metric Analysis
+# Bias, Consistency and Metric Analysis — Pending Real Run
 
-Judge: **offline keyword baseline** - temperature 0.0 - few-shot True
+**Status: no numeric claims are published here because no genuine human-graded five-answer dataset has been supplied.**
 
-> Offline baseline run. A deterministic keyword judge is trivially repeatable and order-invariant, so the consistency tables below are **expected to be perfect and prove nothing about an LLM**. They exist to validate the test harness; re-run with an API key for the real analysis.
+The dashboard implements these tests on the same five answers and active exam setup used by the benchmark:
 
-## 1. Repeatability (same input, same settings)
+1. **Repeatability:** grade the same answer repeatedly with identical settings; report the total-score standard deviation and range.
+2. **Criterion-order sensitivity:** rerun with original, reversed, and shuffled rubric criteria; report the maximum total-score difference.
+3. **Verbosity bias:** append a fixed block of irrelevant filler and measure the change in grade. A positive delta is a warning sign.
+4. **Position consistency:** compare each pair of answers in both A/B orders. Position consistency is the proportion of pairs with the same winning answer after swapping positions.
+5. **Human pairwise agreement:** compare pairwise winners with human-reference total marks; this is reported only for a user-confirmed human-grade dataset.
+6. **Length correlation:** report Pearson/Spearman association between answer word count and automated marks. This is descriptive and unstable at n=5.
 
-3 runs on student_2 -> totals [8.0, 8.0, 8.0]; std = 0.00, range = 0.00 marks. Target: std <= 0.25.
+## Interpretation safeguards
 
-## 2. Criterion-order invariance (prompt-position bias over rubric items)
+- The offline keyword baseline is deterministic; perfect repeatability or position consistency validates only the test harness, not LLM reliability.
+- Temperature 0.0 reduces sampling variability but does not guarantee identical hosted-model results.
+- Position consistency and agreement with human rankings are different measures and are calculated separately.
+- Do not make general fairness claims from five answers. A stronger study should use more scripts and at least two independent human graders, then report inter-rater agreement.
 
-| Order | Total |
-|---|---|
-| original | 8 |
-| reversed | 8 |
-| shuffled | 8 |
-
-Max change across orders: **0.0** marks. Target: <= 0.5.
-
-## 3. Verbosity bias (irrelevant filler appended)
-
-| Answer | Original | Padded | Delta | Words added |
-|---|---|---|---|---|
-| student_3 | 2.5 | 2.5 | +0.0 | 180 |
-| student_4 | 8.5 | 8.5 | +0.0 | 180 |
-
-A fair judge shows delta <= 0 (irrelevant text must never raise the mark).
-
-## 4. Position consistency (pairwise A/B swap)
-
-All 10 answer pairs were judged in both orders. **Consistency: 100%** (target >= 90%). Agreement of the consistent verdicts with human ranking: 80%.
-
-| Pair | Winner (order 1) | Winner (order 2) | Consistent | Human winner |
-|---|---|---|---|---|
-| student_1 vs student_2 | student_1 | student_1 | yes | student_1 |
-| student_1 vs student_3 | student_1 | student_1 | yes | student_1 |
-| student_1 vs student_4 | student_1 | student_1 | yes | student_1 |
-| student_1 vs student_5 | student_1 | student_1 | yes | student_1 |
-| student_2 vs student_3 | student_2 | student_2 | yes | student_2 |
-| student_2 vs student_4 | student_4 | student_4 | yes | student_2 |
-| student_2 vs student_5 | student_2 | student_2 | yes | student_2 |
-| student_3 vs student_4 | student_4 | student_4 | yes | student_3 |
-| student_3 vs student_5 | student_3 | student_3 | yes | student_3 |
-| student_4 vs student_5 | student_4 | student_4 | yes | student_4 |
-
-## 5. Length bias
-
-| | Pearson (words vs score) | Spearman |
-|---|---|---|
-| Automated | 0.96 | 1.00 |
-| Human | 0.65 | 0.70 |
-
-If the automated correlation is clearly higher than the human one, the judge is rewarding length. With n = 5 this is indicative only.
+Run **Bias & consistency** after uploading and confirming a genuine five-answer benchmark to produce the numeric results for this dataset.

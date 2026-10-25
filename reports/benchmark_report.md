@@ -1,49 +1,24 @@
-# Benchmark Evaluation Report
+# Benchmark Evaluation Report — Pending Real Human-Graded Dataset
 
-**Judge:** offline keyword baseline  
-**Temperature:** 0.0  **Few-shot:** True  **Baseline metrics shown to judge:** False  
-**Items:** 5 student answers, graded out of 10 marks.  
-**BLEU/ROUGE backend:** pure-python fallback
+**Status: NOT YET RUN AGAINST GENUINE HUMAN-GRADED ANSWERS.**
 
-> **Important:** this run used the *offline keyword baseline*, not an LLM. It is a lower-bound reference (it counts rubric concepts but cannot detect wrong statements). Re-run with an API key to benchmark the LLM judge: `python scripts/run_reports.py --provider gemini`.
+The project intentionally does not include fabricated benchmark results. The bundled TCP congestion-control answers and example marks are illustrative test fixtures only. They are not evidence of agreement with human examiners.
 
-> The five answers and human marks in `data/benchmark/` are **illustrative sample data** authored for this repository. Replace them with real double-graded scripts before drawing research conclusions.
+## How to generate the formal report
 
-## 1. Score comparison
+1. In the dashboard's **Grade answers** tab, enter the exam question, model answer, and marking rubric.
+2. Download the blank five-answer CSV template from **Benchmark vs human**.
+3. Replace the rows with five de-identified answer scripts and independently assigned human marks for each rubric criterion.
+4. Upload the completed CSV and confirm the marks were independently assigned by a human evaluator.
+5. Run the benchmark and download the generated report. The report will include each reference total, automated total, signed error, MAE, RMSE, Pearson/Spearman correlations (where defined), within-tolerance rates, per-criterion MAE, and BLEU/ROUGE correlations.
 
-| Student | Words | Human | Auto | Error (auto-human) | BLEU | ROUGE-L |
-|---|---|---|---|---|---|---|
-| student_1 | 174 | 9 | 10 | +1.0 | 0.337 | 0.641 |
-| student_2 | 119 | 7.5 | 8 | +0.5 | 0.078 | 0.349 |
-| student_3 | 83 | 3.5 | 2.5 | -1.0 | 0.018 | 0.164 |
-| student_4 | 172 | 3 | 8.5 | +5.5 | 0.097 | 0.297 |
-| student_5 | 38 | 0.5 | 0 | -0.5 | 0.002 | 0.126 |
+## Metrics reported by the application
 
-## 2. Agreement statistics
+- **MAE:** average absolute difference between automated and human total marks.
+- **RMSE:** penalizes larger grading errors more heavily.
+- **Mean signed error:** positive values mean the automated grader is more lenient.
+- **Pearson and Spearman:** linear and rank association; may be `n/a` with too few distinct score values.
+- **Within tolerance:** percentage of answers whose automated total is within 0.5 or 1.0 marks of the human total.
+- **BLEU/ROUGE:** lexical-overlap baselines only; not measures of factual correctness.
 
-| Metric | Value |
-|---|---|
-| MAE (marks) | 1.70 (17.0% of max) |
-| RMSE (marks) | 2.56 |
-| Mean signed error (+ = lenient) | +1.10 |
-| Pearson r | 0.80 |
-| Spearman rho | 0.70 |
-| Within 0.5 mark | 40% |
-| Within 1.0 mark | 80% |
-
-## 3. Per-criterion mean absolute error
-
-| Criterion | MAE (marks) |
-|---|---|
-| Technical Accuracy | 1.10 |
-| Completeness | 0.60 |
-| Nomenclature | 0.40 |
-
-## 4. Can BLEU / ROUGE-L grade on their own?
-
-| Metric | Pearson vs human | Spearman vs human |
-|---|---|---|
-| BLEU | 0.79 | 0.70 |
-| ROUGE-L | 0.88 | 0.90 |
-
-With only 5 items these correlations are unstable. A more telling check is pairwise ordering: ROUGE-L orders 1 of 10 answer pairs differently from the human graders (e.g. student_3 vs student_4). Lexical overlap rewards wording that matches the model answer, so correct paraphrases score low and long answers that reuse the right words but state wrong facts can score high. BLEU/ROUGE are therefore used here as baseline features, not as the grade.
+A user confirmation is an attestation, not an independent audit. Five answers are enough for a small course demonstration but not to establish general reliability. Keep the original human marking records and have a human examiner review automated results.

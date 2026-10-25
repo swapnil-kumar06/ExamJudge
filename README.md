@@ -30,7 +30,7 @@ ExamJudge addresses this problem by combining rubric-based LLM evaluation with a
 ### 🤖 2. LLM-as-a-Judge Evaluation
 - Uses Google Gemini through Google's OpenAI-compatible API endpoint.
 - Supplies the question, model answer, marking criteria, and student response to the evaluator.
-- Uses a fixed temperature of `0.0`.
+- Sends judge requests with temperature `0.0` to reduce sampling variability; hosted-model outputs are not guaranteed to be identical across calls.
 - Supports few-shot calibration examples.
 - Produces criterion-wise marks and concise grading rationales.
 - Identifies supporting evidence, conceptual deficiencies, strengths, and improvement feedback.
@@ -74,18 +74,17 @@ Each assessment can include:
 
 Supported exports include JSON score sheets, CSV results, and Markdown benchmark or analysis reports.
 
-### 🧪 6. Benchmark Against Reference Grades
-The Benchmark vs Human tab compares automated marks with reference grades for five included sample answers.
+### 🧪 6. Benchmark Against Human Grades
+The **Benchmark vs human** tab compares automated marks with independently assigned human marks for five answers. It uses the same active question, model answer, and rubric entered in **Grade answers**. The app does not prefill or default to illustrative benchmark grades.
 
-It calculates:
-- Mean Absolute Error (MAE).
-- Root Mean Squared Error (RMSE).
-- Pearson and Spearman correlations.
-- Agreement within a configurable mark tolerance.
-- Per-criterion grading errors.
-- Correlations between BLEU/ROUGE metrics and reference scores.
+The formal CSV workflow calculates:
+- Mean Absolute Error (MAE) and Root Mean Squared Error (RMSE).
+- Pearson and Spearman correlations where mathematically defined.
+- Mean signed error to assess over- or under-grading.
+- Percentage within 0.5 and 1.0 marks of the human reference.
+- Per-criterion absolute errors and BLEU/ROUGE correlations with reference totals.
 
-**Important:** The five included answers and reference marks are illustrative demonstration data, not genuine independently human-graded examination scripts. They demonstrate the benchmark workflow but do not establish real-world grading accuracy.
+**Important:** bundled answer files and marks are test fixtures only. The formal benchmark requires five complete answers and criterion-level marks supplied by a human evaluator. A checkbox attestation is not independent verification, and five answers do not establish broad grading accuracy.
 
 ### ⚖️ 7. Bias and Consistency Analysis
 The Bias & Consistency tab includes checks for:
@@ -206,7 +205,9 @@ ExamJudge/
 │   │   ├── model_answer.txt
 │   │   └── rubric.json
 │   └── benchmark/
-│       ├── human_grades.json
+│       ├── README.md
+│       ├── benchmark_template.csv
+│       ├── human_grades.json   # illustrative only
 │       └── student_answers/
 │
 ├── reports/
@@ -258,11 +259,19 @@ For more information, see [DEPLOYMENT.md](DEPLOYMENT.md) and [SECURITY.md](SECUR
 
 ## 💻 Run Locally
 
+### Choose one of two run modes (Windows)
+
+**Option 1 — Local/offline demo, no Gemini key:** extract the project and double-click `run_local.bat`. It creates `.venv`, installs dependencies, and starts Streamlit with the Gemini environment variables cleared for that process. In the sidebar, select **Offline baseline**. This is a keyword heuristic for interface testing only, not reliable semantic grading. Internet access is needed for the initial package installation.
+
+**Option 2 — Gemini LLM-as-a-Judge:** double-click `run_gemini.bat`, enter your Gemini API key and a local app password when prompted, then select **Google Gemini** in the sidebar. The script uses environment variables for that process and does not write the key to a file. Input may be visible while typing, so avoid shared computers. For repeatable setup or Streamlit Cloud, use `.streamlit/secrets.toml` or Streamlit Secrets and never commit secrets. The default model is `gemini-2.5-flash`; availability and quotas depend on your Google AI Studio account.
+
+You can also launch either mode manually using the commands below. Temperature is fixed at 0.0, which reduces sampling variability but does not guarantee identical marks on every run.
+
 ### Prerequisites
 
 - Python 3.11 recommended.
 - Git.
-- A Google Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey).
+- For Gemini mode only: a Google Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey). Offline mode requires no API key.
 
 ### 1. Clone the repository
 
@@ -355,7 +364,7 @@ pip install -r requirements-dev.txt
 Run the test suite:
 
 ```bash
-pytest -q
+python -m pytest -q
 ```
 
 The tests cover areas including rubric validation, score normalization, metric calculation, prompt construction, offline grading behavior, JSON extraction, and input safety.
@@ -377,17 +386,25 @@ The repository includes:
 
 ### Important interpretation of included reports
 
-The pre-generated reports were created using the **offline keyword baseline** and illustrative sample data. Their numerical results are for demonstrating the analysis pipeline, not validating Gemini grading accuracy.
+The static files in `reports/` are **report templates pending a genuine evaluation**, not a completed human-grading study. The bundled answers/marks are illustrative fixtures used to test the interface and must not be described as real human marks. The app no longer displays bundled benchmark marks as the default dataset.
 
-To regenerate reports with Gemini, configure your API credentials and run:
+#### Run a real five-answer benchmark
+
+In the app's **Grade answers** tab, enter the target question, model answer, and rubric. Open **Benchmark vs human**, download the blank CSV template generated from that exact rubric, fill it with five de-identified answers and independently assigned human marks for each criterion, upload it, and confirm the marks are genuine. The application grades those exact answers against the same current question/model answer/rubric; it invalidates results when the exam, CSV, rubric or judge settings change. The confirmation is an attestation, not an external audit.
+
+You can also generate reports from the command line:
 
 ```bash
-python scripts/run_reports.py --provider gemini
+python scripts/run_reports.py --provider offline --benchmark-csv data/benchmark/my_real_benchmark.csv --confirm-human-grades
 ```
 
-This command makes API requests and may consume Gemini quota.
+For Gemini, configure `GEMINI_API_KEY` in the environment first and run:
 
-For a credible human-agreement study, replace the illustrative reference marks with independently graded student scripts. Ideally, use at least two human graders, measure inter-rater agreement, and report results on a larger dataset. Five examples alone are insufficient for strong claims about reliability or bias.
+```bash
+python scripts/run_reports.py --provider gemini --benchmark-csv data/benchmark/my_real_benchmark.csv --confirm-human-grades
+```
+
+The Gemini command makes live API requests and may consume quota. Formal report generation requires `--benchmark-csv` plus `--confirm-human-grades`; running without either mode is rejected. Use `--demo` only to create clearly illustrative pipeline reports under `reports/demo/`. The confirmation is an explicit user declaration, not an independent audit. Retain the grading records. A five-answer demonstration is too small for strong reliability claims; use a larger independent dataset and ideally two human graders for a credible study.
 
 ---
 
@@ -427,3 +444,8 @@ Shah & Anchor Kutchhi Engineering College (SAKEC)
 ExamJudge is an academic project demonstrating automated descriptive-answer assessment using large language models and text-similarity metrics. It is a decision-support tool, not a replacement for qualified human evaluation.
 
 **Live demo:** https://examjudge.streamlit.app/
+
+
+### Benchmark data integrity
+
+The Benchmark vs human tab uses the active exam setup and requires a completed five-answer CSV with independently assigned human criterion marks. The blank template is generated from the current rubric. Formal metrics are not generated from bundled illustrative grades. The `reports/` directory contains report templates pending a genuine dataset; it does not claim fabricated benchmark results.

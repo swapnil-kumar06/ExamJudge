@@ -42,41 +42,72 @@ def verbosity_bias(student, sample, cfg: JudgeConfig, repeats=3) -> dict:
 
 
 def position_consistency(students: list[dict], sample, cfg: JudgeConfig, progress=None) -> dict:
+    """Compare pairwise winners after swapping answer positions.
+
+    Human winners are deliberately suppressed unless the dataset was explicitly
+    confirmed as independently human-graded; bundled illustrative marks must not
+    be presented as observed human judgments.
+    """
     pairs = list(itertools.combinations(range(len(students)), 2))
     rows, consistent = [], 0
+    is_real = bool(students) and all(bool(s.get("human_data_is_real", False)) for s in students)
     for n, (i, j) in enumerate(pairs):
         a, b = students[i], students[j]
         w1 = pairwise_winner(sample["question"], sample["model_answer"], sample["rubric"], a["text"], b["text"], cfg)
         w2 = pairwise_winner(sample["question"], sample["model_answer"], sample["rubric"], b["text"], a["text"], cfg)
-        first = {"A": a["id"], "B": b["id"], "TIE": "TIE"}[w1]      # winner when a shown first
-        second = {"A": b["id"], "B": a["id"], "TIE": "TIE"}[w2]     # winner when b shown first
+        first = {"A": a["id"], "B": b["id"], "TIE": "TIE"}[w1]
+        second = {"A": b["id"], "B": a["id"], "TIE": "TIE"}[w2]
         ok = first == second
-        consistent += ok
-        hum = (a["id"] if a["human_total"] > b["human_total"] else b["id"] if b["human_total"] > a["human_total"] else "TIE")
-        rows.append({"pair": f"{a['id']} vs {b['id']}", "order_1_winner": first, "order_2_winner": second,
-                     "consistent": ok, "human_winner": hum, "agrees_with_human": first == hum and ok})
+        consistent += int(ok)
+        human_winner = None
+        agrees = None
+        if is_real:
+            human_winner = (a["id"] if a["human_total"] > b["human_total"] else
+                            b["id"] if b["human_total"] > a["human_total"] else "TIE")
+            # Measure agreement separately from position consistency; do not conflate two different properties.
+            agrees = (first == human_winner)
+        rows.append({
+            "pair": f"{a['id']} vs {b['id']}",
+            "order_1_winner": first,
+            "order_2_winner": second,
+            "consistent": ok,
+            "human_winner": human_winner if is_real else "n/a (unverified grades)",
+            "agrees_with_human": agrees,
+        })
         if progress:
             progress((n + 1) / len(pairs))
-    return {"rows": rows, "pairs": len(pairs), "consistency_rate": consistent / len(pairs),
-            "human_agreement_rate": sum(r["agrees_with_human"] for r in rows) / len(pairs)}
+    return {
+        "rows": rows,
+        "pairs": len(pairs),
+        "consistency_rate": consistent / len(pairs) if pairs else float("nan"),
+        "human_agreement_rate": (sum(bool(r["agrees_with_human"]) for r in rows) / len(pairs))
+        if pairs and is_real else None,
+    }
 
 
-def length_bias(df) -> dict:
-    """Correlation of answer length with automated vs human score."""
+def length_bias(df, reference_verified: bool = False) -> dict:
+    """Correlate answer length with automated marks; reference correlations require attested human data."""
+    unverified = float("nan")
     return {"auto_vs_length_pearson": pearson(df["words"], df["auto_total"]),
-            "human_vs_length_pearson": pearson(df["words"], df["human_total"]),
+            "human_vs_length_pearson": pearson(df["words"], df["human_total"]) if reference_verified else unverified,
             "auto_vs_length_spearman": spearman(df["words"], df["auto_total"]),
-            "human_vs_length_spearman": spearman(df["words"], df["human_total"])}
+            "human_vs_length_spearman": spearman(df["words"], df["human_total"]) if reference_verified else unverified}
 
 
 def run_all(cfg: JudgeConfig, sample, bench, bench_result, repeats=3, progress=None) -> dict:
     students = bench["students"]
+    # Propagate whether human marks are genuine so the analysis cannot accidentally
+    # present bundled illustrative grades as real human agreement.
+    for student in students:
+        student["human_data_is_real"] = bool(bench.get("human_data_is_real", False))
     mid = students[1]["text"]
+    repeat_result = repeatability(mid, sample, cfg, n=repeats)
+    repeat_result["student_id"] = students[1]["id"]
     out = {
-        "repeatability": repeatability(mid, sample, cfg, n=repeats),
+        "repeatability": repeat_result,
         "order": criteria_order_invariance(mid, sample, cfg),
         "verbosity": {s["id"]: verbosity_bias(s["text"], sample, cfg) for s in (students[2], students[3])},
         "position": position_consistency(students, sample, cfg, progress=progress),
-        "length": length_bias(bench_result["df"]),
+        "length": length_bias(bench_result["df"], reference_verified=bool(bench.get("human_data_is_real", False))),
     }
     return out

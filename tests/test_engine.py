@@ -96,3 +96,110 @@ def test_pdf_text_upload_limit():
     from engine.pdf_utils import MAX_UPLOAD_BYTES, ExtractionError, extract_text
     with pytest.raises(ExtractionError, match="10 MB"):
         extract_text(b"x" * (MAX_UPLOAD_BYTES + 1), "answer.txt")
+
+
+def test_illustrative_human_grades_are_not_reported_as_real_agreement():
+    from engine.analysis import position_consistency
+    bench = load_benchmark()
+    sample = load_sample()
+    # The shipped dataset explicitly labels its human grades as illustrative.
+    for student in bench["students"]:
+        student["human_data_is_real"] = False
+    result = position_consistency(bench["students"], sample, JudgeConfig())
+    assert result["human_agreement_rate"] is None
+    assert result["pairs"] == 10
+
+
+def test_benchmark_template_has_expected_columns_and_five_rows():
+    from engine.benchmark import benchmark_template_csv
+    import pandas as pd
+    from io import StringIO
+    template = pd.read_csv(StringIO(benchmark_template_csv(S["rubric"])), keep_default_na=False)
+    assert list(template.columns) == ["student", "answer"] + [c["name"] for c in S["rubric"]]
+    assert len(template) == 5
+    assert all(str(x).startswith("student_") for x in template["student"])
+
+
+def test_parse_uploaded_benchmark_csv_validates_five_answers_and_criterion_limits():
+    from engine.benchmark import parse_benchmark_csv
+    import pandas as pd
+    from io import StringIO
+    frame = pd.DataFrame([
+        {"student": f"real_{i}", "answer": f"A complete answer {i}",
+         "Technical Accuracy": 3.0, "Completeness": 2.0, "Nomenclature": 2.0}
+        for i in range(1, 6)
+    ])
+    parsed = parse_benchmark_csv(frame.to_csv(index=False), S["rubric"])
+    assert len(parsed["students"]) == 5
+    assert parsed["students"][0]["human_total"] == 7.0
+    assert parsed["human_data_is_real"] is False  # marks require explicit confirmation in the UI
+
+    frame.loc[0, "Technical Accuracy"] = 5.0
+    import pytest
+    with pytest.raises(ValueError, match="between 0 and 4"):
+        parse_benchmark_csv(frame.to_csv(index=False), S["rubric"])
+
+
+def test_parse_uploaded_benchmark_csv_rejects_missing_answers_and_wrong_row_count():
+    from engine.benchmark import parse_benchmark_csv
+    import pandas as pd
+    import pytest
+    frame = pd.DataFrame([
+        {"student": f"real_{i}", "answer": f"Answer {i}",
+         "Technical Accuracy": 3, "Completeness": 2, "Nomenclature": 2}
+        for i in range(1, 5)
+    ])
+    with pytest.raises(ValueError, match="exactly five"):
+        parse_benchmark_csv(frame.to_csv(index=False), S["rubric"])
+    frame.loc[0, "answer"] = ""
+    frame.loc[4] = {"student": "real_5", "answer": "A5", "Technical Accuracy": 1, "Completeness": 1, "Nomenclature": 1}
+    with pytest.raises(ValueError, match="answer text.*blank"):
+        parse_benchmark_csv(frame.to_csv(index=False), S["rubric"])
+
+
+def test_position_rows_hide_unverified_human_winners():
+    from engine.analysis import position_consistency
+    from engine.judge import JudgeConfig
+    from engine.benchmark import load_benchmark
+    students = load_benchmark()["students"]
+    result = position_consistency(students, S, JudgeConfig())
+    assert result["human_agreement_rate"] is None
+    assert all(row["human_winner"] == "n/a (unverified grades)" for row in result["rows"])
+    assert all(row["agrees_with_human"] is None for row in result["rows"])
+
+
+def test_length_reference_correlations_are_not_reported_without_confirmed_human_marks():
+    import pandas as pd
+    from engine.analysis import length_bias
+    data = pd.DataFrame({"words": [10, 20, 30, 40, 50],
+                         "auto_total": [1, 2, 3, 4, 5],
+                         "human_total": [5, 4, 3, 2, 1]})
+    unverified = length_bias(data, reference_verified=False)
+    assert unverified["auto_vs_length_pearson"] == 1.0
+    assert unverified["human_vs_length_pearson"] != unverified["human_vs_length_pearson"]  # NaN => n/a
+    verified = length_bias(data, reference_verified=True)
+    assert verified["human_vs_length_pearson"] == -1.0
+
+
+def test_pairwise_human_agreement_is_separate_from_position_consistency(monkeypatch):
+    import engine.analysis as A
+    sample = load_sample()
+    students = [
+        {"id": "higher_human", "text": "answer a", "human_total": 9.0, "human_data_is_real": True},
+        {"id": "lower_human", "text": "answer b", "human_total": 2.0, "human_data_is_real": True},
+    ]
+    # Deliberately always choose the first displayed option. This agrees with the
+    # human winner in order 1 but changes identity after swapping positions.
+    monkeypatch.setattr(A, "pairwise_winner", lambda *args, **kwargs: "A")
+    result = A.position_consistency(students, sample, JudgeConfig())
+    assert result["consistency_rate"] == 0.0
+    assert result["human_agreement_rate"] == 1.0
+
+
+def test_formal_report_cli_requires_real_csv_or_explicit_demo_mode():
+    import subprocess, sys
+    from pathlib import Path
+    cli = Path(__file__).resolve().parents[1] / "scripts" / "run_reports.py"
+    proc = subprocess.run([sys.executable, str(cli)], capture_output=True, text=True)
+    assert proc.returncode != 0
+    assert "required" in proc.stderr.lower()

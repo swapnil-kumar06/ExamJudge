@@ -4,12 +4,14 @@ import os
 import hmac
 import re
 import html
+import hashlib
 
 import pandas as pd
 import streamlit as st
 
 from engine import analysis
-from engine.benchmark import load_benchmark, load_sample, render_benchmark_markdown, run_benchmark
+from engine.benchmark import (load_benchmark, load_sample, render_benchmark_markdown, run_benchmark,
+                               benchmark_template_csv, parse_benchmark_csv)
 from engine.judge import JudgeConfig, grade_answer
 from engine.llm_client import GEMINI, LLMError, OFFLINE, PROVIDERS
 from engine.pdf_utils import MAX_UPLOAD_BYTES, ExtractionError, extract_text
@@ -36,7 +38,7 @@ st.markdown("""
 .card{border:1px solid #E5E7EB;border-radius:12px;padding:.8rem 1rem;background:#fff;margin:.3rem 0}
 </style>
 <div class="hero"><h1>🎓 ExamJudge</h1>
-<p>Rubric-based descriptive-answer grading with Gemini (temperature 0.0), evidence-based rationales, and BLEU/ROUGE baselines.</p></div>
+<p>Rubric-based descriptive-answer grading with an LLM judge or offline baseline, criterion-wise rationales, and BLEU/ROUGE metrics.</p></div>
 """, unsafe_allow_html=True)
 
 
@@ -123,7 +125,7 @@ def load_sample_cb():
     st.session_state["model_answer"] = s["model_answer"]
     st.session_state["rubric_df"] = rubric_df_from(s["rubric"])
     st.session_state.pop("rubric_editor", None)
-    st.session_state["use_bench"] = True
+    st.session_state["use_bench"] = False
 
 
 def export_json(name, res) -> dict:
@@ -134,6 +136,39 @@ def export_json(name, res) -> dict:
                              "deficiencies": c["deficiencies"]} for c in res["criteria"]],
             "conceptual_deficiencies": res["conceptual_deficiencies"], "strengths": res["strengths"],
             "feedback": res["feedback"], "baseline_metrics": res["metrics"], "warnings": res["warnings"]}
+
+
+def stable_signature(payload) -> str:
+    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def grade_inputs_signature(question, model_answer, rubric, files, pasted, use_bench, cfg) -> str:
+    """Fingerprint all grade inputs so old score sheets are not shown for changed inputs."""
+    uploaded = []
+    for file in files or []:
+        raw = file.getvalue()
+        uploaded.append({"name": file.name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
+    sample_answers = []
+    if use_bench:
+        sample_answers = [
+            {"id": item["id"], "sha256": hashlib.sha256(item["text"].encode("utf-8")).hexdigest()}
+            for item in load_benchmark()["students"]
+        ]
+    return stable_signature({
+        "question": question,
+        "model_answer": model_answer,
+        "rubric": rubric,
+        "uploaded_files": uploaded,
+        "pasted_answer": pasted,
+        "use_bench": bool(use_bench),
+        "sample_answers": sample_answers,
+        "provider": cfg.provider,
+        "model": cfg.model,
+        "few_shot": cfg.few_shot,
+        "include_metrics": cfg.include_metrics,
+        "api_key_configured": bool(cfg.api_key),
+    })
 
 
 if "rubric_df" not in st.session_state:
@@ -165,6 +200,7 @@ with st.sidebar:
                             help="Off by default: lexical scores can anchor the judge.")
     st.markdown("**Temperature:** `0.0` (fixed)")
     st.caption("The judge returns concise, evidence-based grading rationales.")
+    st.caption("Temperature 0.0 reduces sampling variability but does not guarantee identical hosted-model results.")
     st.caption(f"Session usage guard: {st.session_state.get('llm_calls_used', 0)}/{MAX_LLM_CALLS_PER_SESSION} estimated Gemini calls")
     if APP_PASSWORD:
         st.button("Log out and clear this session", key="logout_button", on_click=_logout)
@@ -175,8 +211,8 @@ def get_cfg() -> JudgeConfig:
                        few_shot=few_shot, include_metrics=inc_metrics)
 
 
-tab_grade, tab_bench, tab_bias, tab_prompts, tab_about = st.tabs(
-    ["📝 Grade answers", "📊 Benchmark vs human", "🧪 Bias & consistency", "📚 Prompts & calibration", "ℹ️ About & deploy"])
+tab_grade, tab_bench, tab_bias, tab_prompts = st.tabs(
+    ["📝 Grade answers", "📊 Benchmark vs human", "🧪 Bias & consistency", "📚 Prompts & calibration"])
 
 # ------------------------------------------------------------------ tab 1
 with tab_grade:
@@ -205,6 +241,9 @@ with tab_grade:
     files = c1.file_uploader("Upload answer PDFs (or .txt, max 10 MB each)", type=["pdf", "txt"], accept_multiple_files=True, help="Up to 10 files per grading run. PDFs are limited to 40 pages and 60,000 extracted characters.")
     pasted = c2.text_area("…or paste one answer", height=120)
     use_bench = c2.checkbox("Also grade the 5 sample answers", key="use_bench")
+    current_grade_signature = grade_inputs_signature(
+        question, model_answer, rubric, files, pasted, use_bench, get_cfg()
+    )
 
     if st.button("🚀 Grade", type="primary"):
         if not question.strip() or not model_answer.strip() or rubric is None:
@@ -244,8 +283,12 @@ with tab_grade:
                             out.append({"name": name, "error": str(e)})
                         bar.progress((i + 1) / len(answers))
                     st.session_state["results"] = out
+                    st.session_state["results_signature"] = current_grade_signature
 
     results = st.session_state.get("results")
+    if results and st.session_state.get("results_signature") != current_grade_signature:
+        st.warning("These score sheets are stale because the question, answer key, rubric, student answers, or judge settings changed. Click Grade again to refresh them.")
+        results = None
     if results:
         st.markdown("#### 3 · Results")
         ok = [r for r in results if "res" in r]
@@ -304,72 +347,261 @@ with tab_grade:
 
 # ------------------------------------------------------------------ tab 2
 with tab_bench:
-    st.markdown("#### Automated vs human marks (5 answers)")
-    st.caption("Uses `data/benchmark/` - illustrative sample answers & human marks. Replace the files with real double-graded scripts for a real study.")
-    if st.button("▶️ Run benchmark", type="primary"):
-        cfg = get_cfg()
-        if reserve_api_budget(len(load_benchmark()["students"])):
-            bar = st.progress(0.0)
+    st.markdown("#### Automated scores vs independently human-graded answers")
+    st.caption(
+        "The formal benchmark uses the current question, model answer, and rubric from Grade answers. "
+        "No bundled marks are treated as human grades. Upload five complete answers and independently assigned criterion marks."
+    )
+
+    benchmark_exam_ready = bool(
+        question and question.strip() and model_answer and model_answer.strip() and rubric is not None
+    )
+    benchmark_exam = (
+        {"question": question.strip(), "model_answer": model_answer.strip(), "rubric": rubric}
+        if benchmark_exam_ready else None
+    )
+    benchmark_data = None
+    benchmark_preview = None
+    benchmark_data_error = None
+
+    if not benchmark_exam_ready:
+        st.warning("First fill in the Reference question, Model answer, and a valid rubric in the Grade answers tab. The benchmark will use those exact inputs.")
+    elif total_marks(rubric) <= 0:
+        st.error("The active rubric must have a positive total before benchmarking.")
+        benchmark_exam_ready = False
+        benchmark_exam = None
+
+    if rubric is not None:
+        st.download_button(
+            "⬇️ Download blank five-answer CSV template",
+            benchmark_template_csv(rubric),
+            "benchmark_template.csv",
+            "text/csv",
+            help="The template uses criterion names and marks from the current Grade answers rubric.",
+        )
+        st.caption(
+            "CSV columns: `student`, `answer`, and one column per criterion: "
+            + ", ".join(f"`{c['name']}` (0–{c['max_marks']:g})" for c in rubric)
+            + ". Provide exactly five unique student IDs, full answer texts, and marks independently assigned by a human evaluator."
+        )
+    else:
+        st.info("Fix the rubric on the Grade answers tab before downloading the matching CSV template.")
+
+    uploaded_benchmark = st.file_uploader(
+        "Upload completed five-answer benchmark CSV (UTF-8)", type=["csv"], key="benchmark_csv_upload_v2"
+    )
+    # Bind the human-grade attestation to the exact CSV and exam setup. If either
+    # changes, force a fresh confirmation rather than inheriting a stale checkbox.
+    csv_digest = hashlib.sha256(uploaded_benchmark.getvalue()).hexdigest() if uploaded_benchmark is not None else "no-upload"
+    attestation_context = stable_signature({
+        "csv_sha256": csv_digest,
+        "question": question or "",
+        "model_answer": model_answer or "",
+        "rubric": rubric,
+    })
+    if st.session_state.get("benchmark_attestation_context") != attestation_context:
+        st.session_state["confirm_benchmark_human_grades_v2"] = False
+        st.session_state["benchmark_attestation_context"] = attestation_context
+    human_grade_confirmation = st.checkbox(
+        "I confirm all five criterion-level reference marks were independently assigned by a human evaluator.",
+        key="confirm_benchmark_human_grades_v2",
+    )
+
+    if uploaded_benchmark is not None:
+        if rubric is None:
+            benchmark_data_error = "Cannot validate the CSV until the rubric in Grade answers is valid."
+            st.error(benchmark_data_error)
+        else:
             try:
-                st.session_state["bench"] = run_benchmark(cfg, progress=bar.progress)
+                benchmark_preview = parse_benchmark_csv(uploaded_benchmark.getvalue(), rubric)
+                preview_df = pd.DataFrame([
+                    {"student": student["id"], "answer words": len(student["text"].split()),
+                     **{f"reference: {name}": score for name, score in student["human"].items()},
+                     "reference total": student["human_total"]}
+                    for student in benchmark_preview["students"]
+                ])
+                st.markdown("**CSV validation preview**")
+                st.dataframe(preview_df, hide_index=True, use_container_width=True)
+                if not benchmark_exam_ready:
+                    st.warning("The CSV is structurally valid, but grading cannot run until the exam question, model answer, and rubric are complete.")
+                elif not human_grade_confirmation:
+                    st.warning("Reference marks are not confirmed. No formal benchmark metrics or human-agreement report will be generated until you confirm they were genuinely assigned by a human evaluator.")
+                else:
+                    benchmark_data = benchmark_preview
+                    benchmark_data["human_data_is_real"] = True
+                    benchmark_data["source"] = f"uploaded CSV: {safe_filename(uploaded_benchmark.name, 'benchmark.csv')}"
+                    benchmark_data["human_data_note"] = (
+                        "The app user attested that all criterion-level reference marks were independently assigned by a human evaluator. "
+                        "This declaration is not an external audit."
+                    )
+                    for student in benchmark_data["students"]:
+                        student["human_data_is_real"] = True
+                    st.success("CSV passed validation and the user attested to genuine human grading. Keep the original grading records for auditability.")
+            except ValueError as exc:
+                benchmark_data_error = str(exc)
+                st.error(benchmark_data_error)
+
+    def _dataset_payload(data):
+        if data is None:
+            return None
+        return {
+            "source": data.get("source", "unknown"),
+            "human_data_is_real": bool(data.get("human_data_is_real", False)),
+            "students": [
+                {"id": student["id"], "text": student["text"], "human": student["human"]}
+                for student in data["students"]
+            ],
+        }
+
+    def _result_signature(data, cfg, exam):
+        payload = {
+            "dataset": _dataset_payload(data),
+            "provider": cfg.provider,
+            "model": cfg.model,
+            "few_shot": cfg.few_shot,
+            "include_metrics": cfg.include_metrics,
+            "question": exam["question"],
+            "model_answer": exam["model_answer"],
+            "rubric": exam["rubric"],
+        }
+        encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    cfg = get_cfg()
+    current_benchmark_signature = (
+        _result_signature(benchmark_data, cfg, benchmark_exam)
+        if benchmark_data is not None and benchmark_exam is not None else None
+    )
+
+    if st.button("▶️ Run benchmark", type="primary", key="run_benchmark_button_v2"):
+        if benchmark_data is None or benchmark_exam is None:
+            st.error(benchmark_data_error or "To run a formal benchmark, provide a complete exam, a valid five-answer CSV, and confirm that the reference marks are genuine independent human grades.")
+        elif not reserve_api_budget(len(benchmark_data["students"])):
+            pass
+        else:
+            try:
+                bar = st.progress(0.0)
+                result = run_benchmark(cfg, benchmark_exam, benchmark_data, progress=bar.progress)
+                result["human_data_is_real"] = True
+                result["human_data_note"] = benchmark_data["human_data_note"]
+                result["data_source"] = benchmark_data.get("source", "uploaded human-graded CSV")
+                result["config_signature"] = current_benchmark_signature
+                st.session_state["bench"] = result
                 st.session_state["bench_cfg"] = cfg
-            except LLMError as e:
-                st.error(str(e))
-    b = st.session_state.get("bench")
-    if b:
-        s = b["stats"]
+            except (LLMError, ValueError) as exc:
+                st.session_state.pop("bench", None)
+                st.error(str(exc))
+
+    benchmark_result = st.session_state.get("bench")
+    if benchmark_result and benchmark_result.get("config_signature") != current_benchmark_signature:
+        st.warning("These benchmark results are stale because the exam, rubric, reference marks, dataset, or judge settings changed. Run the benchmark again.")
+        benchmark_result = None
+    if benchmark_result and current_benchmark_signature is not None:
+        st.info("Human marks are user-confirmed as independently assigned; the application does not independently audit the original grading records. With five answers, correlations are descriptive and unstable.")
+        stats = benchmark_result["stats"]
         cols = st.columns(5)
-        cols[0].metric("MAE (marks)", f"{s['MAE']:.2f}")
-        cols[1].metric("Pearson r", "n/a" if s["pearson"] != s["pearson"] else f"{s['pearson']:.2f}")
-        cols[2].metric("Spearman ρ", "n/a" if s["spearman"] != s["spearman"] else f"{s['spearman']:.2f}")
-        cols[3].metric("Within 1 mark", f"{s['within_1.0']*100:.0f}%")
-        cols[4].metric("Bias (+lenient)", f"{s['mean_signed_error']:+.2f}")
-        st.dataframe(b["df"].round(3), hide_index=True)
-        st.bar_chart(b["df"].set_index("student")[["human_total", "auto_total"]])
-        st.download_button("⬇️ Benchmark report (Markdown)", render_benchmark_markdown(b, st.session_state["bench_cfg"]),
-                           "benchmark_report.md", "text/markdown")
-        st.download_button("⬇️ Scores (CSV)", b["df"].to_csv(index=False), "benchmark_scores.csv", "text/csv")
+        cols[0].metric("MAE vs human marks", f"{stats['MAE']:.2f}")
+        cols[1].metric("Pearson r", "n/a" if pd.isna(stats["pearson"]) else f"{stats['pearson']:.2f}")
+        cols[2].metric("Spearman ρ", "n/a" if pd.isna(stats["spearman"]) else f"{stats['spearman']:.2f}")
+        cols[3].metric("Within 1 mark", f"{stats['within_1.0'] * 100:.0f}%")
+        cols[4].metric("Mean signed error", f"{stats['mean_signed_error']:+.2f}", help="Positive means automated marks are higher than human marks.")
+        st.caption(f"Judge: {benchmark_result['judge']} · Dataset: {benchmark_result.get('data_source', 'unknown source')} · n={stats['n']} · Max={benchmark_result['max_total']:g}")
+        reference_col_rename = {column: column.replace("human_", "human_reference_")
+                                for column in benchmark_result["df"].columns if column.startswith("human_")}
+        reference_col_rename.update({"human_total": "human_reference_total", "error": "auto_minus_human_reference"})
+        display_scores = benchmark_result["df"].rename(columns=reference_col_rename)
+        st.dataframe(display_scores.round(3), hide_index=True, use_container_width=True)
+        chart_df = benchmark_result["df"].rename(columns={"human_total": "human_reference_total"})
+        st.bar_chart(chart_df.set_index("student")[["human_reference_total", "auto_total"]])
+        st.download_button(
+            "⬇️ Benchmark evaluation report (Markdown)",
+            render_benchmark_markdown(benchmark_result, st.session_state["bench_cfg"]),
+            "benchmark_report.md", "text/markdown",
+        )
+        csv_scores = display_scores.copy()
+        csv_scores["dataset_source"] = benchmark_result.get("data_source", "unknown source")
+        csv_scores["human_marks_user_attested"] = True
+        csv_scores["judge"] = benchmark_result.get("judge", "unknown judge")
+        st.download_button("⬇️ Benchmark scores (CSV)", csv_scores.to_csv(index=False), "benchmark_scores.csv", "text/csv")
 
 # ------------------------------------------------------------------ tab 3
 with tab_bias:
     st.markdown("#### Reliability and bias checks")
-    st.caption("Repeatability · criterion-order invariance · verbosity (padding) bias · position consistency (A/B swap) · length bias. "
-               "Costs ≈ 35 judge calls with an LLM (free tiers may rate-limit; the run stops with an error if so).")
-    reps = st.slider("Repeatability runs", 2, 5, 3)
-    if st.button("▶️ Run all checks", type="primary"):
-        sample, bench = load_sample(), load_benchmark()
-        cfg = get_cfg()
-        estimated = 35 + (len(bench["students"]) if "bench" not in st.session_state else 0)
-        if reserve_api_budget(estimated):
-            bar = st.progress(0.0, text="Running…")
-            try:
-                if "bench" not in st.session_state:
-                    st.session_state["bench"] = run_benchmark(cfg, sample, bench)
-                    st.session_state["bench_cfg"] = cfg
-                st.session_state["analysis"] = analysis.run_all(cfg, sample, bench, st.session_state["bench"], repeats=reps,
-                                                                progress=bar.progress)
-                st.session_state["analysis_cfg"] = cfg
-            except LLMError as e:
-                st.error(str(e))
-    a = st.session_state.get("analysis")
-    if a:
-        if st.session_state["analysis_cfg"].offline:
-            st.info("Offline baseline is deterministic, so these checks are trivially perfect - they validate the harness only. "
-                    "Select an LLM judge to measure real bias.")
-        r, o, p, ln = a["repeatability"], a["order"], a["position"], a["length"]
-        c = st.columns(4)
-        c[0].metric("Repeat std (marks)", f"{r['std']:.2f}", help="target ≤ 0.25")
-        c[1].metric("Order Δ (marks)", f"{o['max_delta']:.1f}", help="target ≤ 0.5")
-        c[2].metric("Position consistency", f"{p['consistency_rate']*100:.0f}%", help="target ≥ 90%")
-        c[3].metric("Agree w/ human (pairs)", f"{p['human_agreement_rate']*100:.0f}%")
-        st.markdown("**Verbosity bias** - irrelevant filler appended (delta must be ≤ 0)")
-        st.dataframe(pd.DataFrame(a["verbosity"]).T, )
-        st.markdown("**Pairwise A/B swap**")
-        st.dataframe(pd.DataFrame(p["rows"]), hide_index=True)
-        st.markdown("**Length vs score correlation**")
-        st.dataframe(pd.DataFrame([ln]).round(3), hide_index=True)
-        st.download_button("⬇️ Bias report (Markdown)", bias_markdown(a, st.session_state["analysis_cfg"], st.session_state["bench"]),
-                           "bias_consistency_analysis.md", "text/markdown")
+    st.caption(
+        "Tests run against the same five uploaded answers and the current exam setup used by the benchmark. "
+        "They measure repeatability, criterion-order sensitivity, verbosity padding, answer-position swaps, and answer-length correlation."
+    )
+    reps = st.slider("Repeatability runs", 2, 5, 3, key="bias_repeatability_runs_v2")
+    if benchmark_data is None or benchmark_exam is None:
+        st.warning("Upload five complete answers in Benchmark vs human, provide the current exam setup, and confirm the marks are genuine human grades before running formal bias and metric reports.")
+    else:
+        if provider == OFFLINE:
+            st.info("Offline mode is a deterministic keyword baseline, not an LLM. Its repeatability/position tests validate the test harness only; use Gemini to measure LLM-specific behavior.")
+        estimated_calls = len(benchmark_data["students"]) + reps + 3 + 4 + (len(benchmark_data["students"]) * (len(benchmark_data["students"]) - 1))
+        st.caption(f"Estimated judge calls for this run: {estimated_calls}. For five answers, pairwise A/B swapping performs 20 pairwise calls, plus grading and other checks. Provider quotas may be lower.")
+        if st.button("▶️ Run all checks", type="primary", key="run_bias_checks_button_v2"):
+            cfg = get_cfg()
+            if reserve_api_budget(estimated_calls):
+                try:
+                    bar = st.progress(0.0, text="Running reliability checks…")
+                    benchmark_result_for_bias = run_benchmark(cfg, benchmark_exam, benchmark_data, progress=bar.progress)
+                    benchmark_result_for_bias["human_data_is_real"] = True
+                    benchmark_result_for_bias["human_data_note"] = benchmark_data.get("human_data_note", "Human marks user-attested.")
+                    benchmark_result_for_bias["data_source"] = benchmark_data.get("source", "uploaded human-graded CSV")
+                    sig = _result_signature(benchmark_data, cfg, benchmark_exam)
+                    analysis_result = analysis.run_all(
+                        cfg, benchmark_exam, benchmark_data, benchmark_result_for_bias,
+                        repeats=reps, progress=bar.progress,
+                    )
+                    st.session_state["analysis"] = analysis_result
+                    st.session_state["analysis_cfg"] = cfg
+                    st.session_state["analysis_signature"] = sig
+                    st.session_state["analysis_benchmark"] = benchmark_result_for_bias
+                except (LLMError, ValueError) as exc:
+                    st.session_state.pop("analysis", None)
+                    st.error(str(exc))
+
+    analysis_result = st.session_state.get("analysis")
+    current_bias_signature = _result_signature(benchmark_data, get_cfg(), benchmark_exam) if benchmark_data is not None and benchmark_exam is not None else None
+    if analysis_result and (current_bias_signature is None or st.session_state.get("analysis_signature") != current_bias_signature):
+        st.warning("These bias results are stale because the exam, rubric, dataset, reference marks, or judge settings changed. Run the checks again.")
+        analysis_result = None
+    if analysis_result and current_bias_signature is not None:
+        analysis_cfg = st.session_state["analysis_cfg"]
+        analysis_benchmark = st.session_state["analysis_benchmark"]
+        st.info("Bias diagnostics use the current five-answer dataset. Results are descriptive for n=5 and do not establish general reliability.")
+        if analysis_cfg.offline:
+            st.warning("Offline baseline is keyword-based and deterministic. Perfect repeatability or position consistency does not validate LLM grading.")
+        repeat, order, position, length = (
+            analysis_result["repeatability"], analysis_result["order"],
+            analysis_result["position"], analysis_result["length"],
+        )
+        columns = st.columns(4)
+        columns[0].metric("Repeat std (marks)", f"{repeat['std']:.2f}", help="Variation across repeated calls to the same judge and input.")
+        columns[1].metric("Criterion-order Δ (marks)", f"{order['max_delta']:.1f}", help="Difference between original, reversed, and shuffled criterion order.")
+        columns[2].metric("Position consistency", f"{position['consistency_rate'] * 100:.0f}%", help="Percent of pairs where the same student wins after answer positions are swapped.")
+        human_agreement = position.get("human_agreement_rate")
+        columns[3].metric("Pairwise agreement vs human", "n/a" if human_agreement is None else f"{human_agreement * 100:.0f}%")
+        st.markdown("**Verbosity bias — irrelevant filler appended**")
+        st.caption("A positive delta means the score increased after irrelevant filler was appended. This is a diagnostic probe, not proof of general fairness.")
+        st.dataframe(pd.DataFrame(analysis_result["verbosity"]).T, use_container_width=True)
+        st.markdown("**Pairwise A/B position swap**")
+        pairwise_display = pd.DataFrame(position["rows"]).rename(columns={
+            "human_winner": "human_reference_winner",
+            "agrees_with_human": "agrees_with_human_reference",
+        })
+        st.dataframe(pairwise_display, hide_index=True, use_container_width=True)
+        st.markdown("**Answer length vs score correlation**")
+        length_display = {
+            key.replace("human_", "human_reference_"): ("n/a" if pd.isna(value) else round(float(value), 3))
+            for key, value in length.items()
+        }
+        st.dataframe(pd.DataFrame([length_display]), hide_index=True, use_container_width=True)
+        st.download_button(
+            "⬇️ Bias and consistency report (Markdown)",
+            bias_markdown(analysis_result, analysis_cfg, analysis_benchmark),
+            "bias_consistency_analysis.md", "text/markdown",
+        )
 
 # ------------------------------------------------------------------ tab 4
 with tab_prompts:
@@ -391,20 +623,3 @@ with tab_prompts:
         else:
             st.write("Fill in the question, model answer and rubric on the first tab.")
 
-# ------------------------------------------------------------------ tab 5
-with tab_about:
-    st.markdown("""
-#### How it works
-1. **Extract** text from uploaded PDFs (`pypdf`; scanned PDFs need OCR first).
-2. **Baseline metrics:** BLEU, ROUGE-1/2/L from Hugging Face `evaluate`, plus cosine similarity.
-3. **LLM-as-a-Judge:** Gemini receives the rubric, model answer and student response; it returns concise evidence-based rationales and scores (temperature 0.0).
-4. **Validate:** scores are clamped, rounded to 0.5 and totals recomputed in code - the app never trusts model arithmetic.
-5. **Output:** itemised score sheet, deficiencies, feedback as structured JSON/CSV.
-
-#### Free deployment
-* **Streamlit Community Cloud:** deploy `app.py`, then set `GEMINI_API_KEY`, `APP_PASSWORD`, and optionally `GEMINI_MODEL` under App settings → Secrets. `APP_PASSWORD` is mandatory when a Gemini key is configured.
-* **Hugging Face Spaces (Docker):** see `DEPLOYMENT.md`; configure `GEMINI_API_KEY` and `APP_PASSWORD` as Space secrets.
-* Get a Gemini key from Google AI Studio. Never commit secrets to GitHub or put them into the app UI.
-
-Use as decision support: a human examiner should review borderline scores. This app's shared password and per-session limits are basic abuse prevention, not enterprise authentication or a global quota. Set provider-side usage limits and do not process sensitive student records without institutional approval.
-""")
